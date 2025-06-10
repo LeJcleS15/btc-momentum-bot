@@ -327,7 +327,7 @@ def search_optimal_strategies_parallel(
     return [{"fast": s["fast"], "slow": s["slow"]} for s in selected]
 
 
-def main():
+def search():
     logger.info("BTC Momentum Strategy Optimization")
 
     df = load_price_data()
@@ -386,7 +386,7 @@ def main():
     evaluate("test", test_data)
 
 
-def test():
+def main():
     logger.info("Ensemble Backtest on Multiple Time Periods")
 
     df = load_price_data()
@@ -406,19 +406,23 @@ def test():
     two_months_prior = last_month_start - pd.Timedelta(days=60)
 
     # Create three datasets
-    last_month_data = df[df.index >= last_month_start]
-    full_3mo_data = df[df.index >= two_months_prior]
-    prior_2mo_data = df[(df.index >= two_months_prior) & (df.index < last_month_start)]
+    datasets = {
+        "last_month": df[df.index >= last_month_start],
+        "full_3mo": df[df.index >= two_months_prior],
+        "prior_2mo": df[(df.index >= two_months_prior) & (df.index < last_month_start)],
+    }
 
-    def run_backtest(data, name):
-        logger.info(f"{name} ({len(data)} rows):")
+    all_metrics = []
+
+    def run_backtest(data, period_name, period_key):
+        logger.info(f"{period_name} ({len(data)} rows):")
 
         ema_cache = precompute_all_emas(data, 250)
         timeline = backtest_ensemble(data, strategies, ema_cache=ema_cache)
 
         if timeline.empty:
-            logger.info(f"  No trades generated!")
-            return
+            logger.info("  No trades generated!")
+            return None, None
 
         first_capital = (
             timeline[timeline.is_entry]["equity"].iloc[0]
@@ -427,6 +431,22 @@ def test():
         )
         metrics = calculate_performance_metrics(timeline, first_capital)
 
+        # Add period info to metrics
+        metrics_row = {
+            "period": period_key,
+            "period_name": period_name,
+            "start_date": data.index[0],
+            "end_date": data.index[-1],
+            "rows": len(data),
+            "initial_capital": first_capital,
+            **metrics,
+        }
+        all_metrics.append(metrics_row)
+
+        # Save timeline for this period
+        timeline_file = f"./results/timeline_{period_key}.csv"
+        timeline.to_csv(timeline_file)
+        logger.info(f"  Saved timeline to {timeline_file}")
         logger.info(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
         logger.info(f"  Total Return: {metrics['total_return_pct']:.2f}%")
         logger.info(f"  Max Drawdown: {metrics['max_drawdown_pct']:.2f}%")
@@ -435,12 +455,30 @@ def test():
         )
         logger.info(f"  Average Hold Time: {metrics['avg_hold_hours']:.2f} hours")
 
+        return timeline, metrics
+
+    # Create results directory
+    import os
+
+    os.makedirs("./results", exist_ok=True)
+
     # Run backtests on all three periods
-    run_backtest(last_month_data, "Last Month Only")
-    run_backtest(full_3mo_data, "Full 3 Months")
-    run_backtest(prior_2mo_data, "Prior 2 Months Only")
+    for period_key, data in datasets.items():
+        period_names = {
+            "last_month": "Last Month Only",
+            "full_3mo": "Full 3 Months",
+            "prior_2mo": "Prior 2 Months Only",
+        }
+        run_backtest(data, period_names[period_key], period_key)
+
+    # Save summary metrics
+    if all_metrics:
+        metrics_df = pd.DataFrame(all_metrics)
+        metrics_df.to_csv("./results/performance_summary.csv", index=False)
+        logger.info("Saved performance summary to ./results/performance_summary.csv")
+
+    logger.info("All results saved to ./results/ directory")
 
 
 if __name__ == "__main__":
-    # main()
-    test()
+    main()
