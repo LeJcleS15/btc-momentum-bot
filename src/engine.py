@@ -6,12 +6,12 @@ import random
 from typing import List, Optional, NamedTuple
 import multiprocessing as mp
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,16 +19,15 @@ class Position(NamedTuple):
     signal: int
     entry_price: float
     quantity: float
-    capital: float
+    capital: float  # USD
 
 
 class MarkToMarket(NamedTuple):
-    pnl: float
-    equity: float
+    pnl: float  # USD
+    equity: float  # USD
 
 
 def load_price_data(file_path: str = "./data/btc_1m_3months.json") -> pd.DataFrame:
-    """Load and clean BTC price data from JSON file."""
     logger.info(f"Loading price data from {file_path}")
 
     with open(file_path) as f:
@@ -38,8 +37,8 @@ def load_price_data(file_path: str = "./data/btc_1m_3months.json") -> pd.DataFra
     df["timestamp"] = pd.to_datetime(df["start"].astype(int), unit="ms")
     df = df.set_index("timestamp")
     df["price"] = df["oracleClose"].astype(float)
+    df["volume"] = df["baseVolume"].astype(float)  # BTC volume
 
-    # Clean data
     initial_rows = len(df)
     df = df[~df.index.duplicated(keep="first")]
     df = df.sort_index()
@@ -48,11 +47,10 @@ def load_price_data(file_path: str = "./data/btc_1m_3months.json") -> pd.DataFra
     logger.info(
         f"Loaded {final_rows} rows (removed {initial_rows - final_rows} duplicates)"
     )
-    return df[["price"]]
+    return df[["price", "volume"]]
 
 
 def precompute_all_emas(price_data: pd.DataFrame, max_window: int = 250) -> dict:
-    """Pre-compute EMAs for all windows to avoid recalculation."""
     logger.info(f"Pre-computing EMAs for windows 2 to {max_window}")
 
     ema_cache = {}
@@ -63,16 +61,27 @@ def precompute_all_emas(price_data: pd.DataFrame, max_window: int = 250) -> dict
     return ema_cache
 
 
-def generate_momentum_signal(fast_ema: pd.Series, slow_ema: pd.Series) -> pd.Series:
-    """Generate momentum signals using pre-computed EMAs."""
+def generate_momentum_signal(
+    fast_ema: pd.Series,
+    slow_ema: pd.Series,
+    volume: pd.Series = None,
+    vol_threshold: float = 0.01,
+) -> pd.Series:
     momentum = fast_ema - slow_ema
-    return np.sign(momentum).shift(2).dropna()
+    price_signal = np.sign(momentum).shift(2)
+
+    if volume is not None:
+        # only trade when volume > recent average
+        vol_ma = volume.rolling(20).mean()  # 20-period volume average
+        volume_filter = (volume > vol_ma * vol_threshold).shift(2)
+        price_signal = price_signal * volume_filter
+
+    return price_signal.dropna()
 
 
 def create_ensemble_signal(
     price_data: pd.DataFrame, strategy_configs: List[dict], ema_cache: dict = None
 ) -> pd.DataFrame:
-    """Combine multiple momentum strategies using median voting."""
     logger.debug(f"Creating ensemble from {len(strategy_configs)} strategies")
 
     if len(strategy_configs) == 0:
@@ -84,7 +93,6 @@ def create_ensemble_signal(
     for config in strategy_configs:
         fast, slow = config["fast"], config["slow"]
 
-        # Use cache if available, otherwise compute on demand
         if ema_cache and fast in ema_cache and slow in ema_cache:
             ema_fast = ema_cache[fast]
             ema_slow = ema_cache[slow]
@@ -92,10 +100,9 @@ def create_ensemble_signal(
             ema_fast = price_data["price"].ewm(span=fast).mean()
             ema_slow = price_data["price"].ewm(span=slow).mean()
 
-        signal = generate_momentum_signal(ema_fast, ema_slow)
+        signal = generate_momentum_signal(ema_fast, ema_slow, price_data["volume"])
         individual_signals.append(signal)
 
-    # Combine signals
     df = price_data.copy()
     signals_matrix = pd.concat(individual_signals, axis=1)
     df["ensemble_signal"] = signals_matrix.median(axis=1)
@@ -103,17 +110,13 @@ def create_ensemble_signal(
     return df.dropna()
 
 
-def open_new_position(signal: int, price: float, available_capital: float) -> Position:
-    """Open a new trading position."""
-    quantity = available_capital / price
-    logger.debug(
-        f"Opening position: signal={signal}, price={price:.2f}, qty={quantity:.6f}"
-    )
-    return Position(signal, price, quantity, available_capital)
+def open_new_position(
+    signal: int, price: float, btc_qty: float, capital: float
+) -> Position:
+    return Position(signal, price, btc_qty, capital)
 
 
 def calculate_mtm(position: Position, current_price: float) -> MarkToMarket:
-    """Calculate mark-to-market PnL and equity."""
     pnl = position.signal * position.quantity * (current_price - position.entry_price)
     equity = position.capital + pnl
     return MarkToMarket(pnl, equity)
@@ -122,14 +125,12 @@ def calculate_mtm(position: Position, current_price: float) -> MarkToMarket:
 def backtest_ensemble(
     df: pd.DataFrame,
     strategies: List[dict],
-    initial_capital: float = 1.0,
+    btc_qty: float = 1,
     ema_cache: dict = None,
 ) -> pd.DataFrame:
-    """Backtest ensemble strategy with every-minute rebalancing"""
     if len(strategies) == 0:
         return pd.DataFrame()
 
-    # Create ensemble signals
     df_signals = create_ensemble_signal(df, strategies, ema_cache)
 
     if len(df_signals) == 0:
@@ -137,9 +138,8 @@ def backtest_ensemble(
 
     timeline = []
     position: Optional[Position] = None
-    capital_0 = initial_capital
+    initial_capital_usd = 0
 
-    # Rebalance every minute
     for _, row in df_signals.iterrows():
         ts = row.name
         price = row.price
@@ -153,38 +153,41 @@ def backtest_ensemble(
             "is_exit": False,
             "qty": 0.0,
             "pnl": 0.0,
-            "equity": capital_0,
+            "equity": 0.0,
         }
 
-        # Mark existing position
         if position is not None:
             mtm = calculate_mtm(position, price)
             snap["qty"] = position.quantity
             snap["pnl"] = mtm.pnl
             snap["equity"] = mtm.equity
 
-            # Check if signal changed
             if signal != position.signal:
                 snap["is_exit"] = True
-                cap_1 = mtm.equity
+                current_equity = mtm.equity
 
-                if signal != 0:  # Open new position
-                    position = open_new_position(signal, price, cap_1)
+                if signal != 0:
+                    position = open_new_position(signal, price, btc_qty, current_equity)
                     snap["is_entry"] = True
                     snap["qty"] = position.quantity
+                    snap["equity"] = current_equity
                 else:
                     position = None
 
-        # No position, maybe open
         elif signal != 0:
-            position = open_new_position(signal, price, capital_0)
+            initial_capital_usd = price * btc_qty
+            position = open_new_position(signal, price, btc_qty, initial_capital_usd)
             snap["is_entry"] = True
             snap["qty"] = position.quantity
-            snap["equity"] = position.capital
+            snap["equity"] = initial_capital_usd
+
+        else:
+            # When no position and no signal, carry forward last equity
+            if len(timeline) > 0:
+                snap["equity"] = timeline[-1]["equity"]
 
         timeline.append(snap)
 
-    # Final close
     if (
         position is not None
         and len(timeline) > 0
@@ -254,20 +257,18 @@ def calculate_performance_metrics(timeline: pd.DataFrame, capital_0: float) -> d
 def test_single_strategy(
     price_data: pd.DataFrame, fast_window: int, slow_window: int, ema_cache: dict = None
 ) -> dict:
-    """Test a single momentum strategy using real backtest and compute_performance."""
     if fast_window >= slow_window:
         return None
 
     try:
         config = [{"fast": fast_window, "slow": slow_window}]
-        timeline = backtest_ensemble(
-            price_data, config, initial_capital=1.0, ema_cache=ema_cache
-        )
+        timeline = backtest_ensemble(price_data, config, ema_cache=ema_cache)
 
-        if len(timeline) < 10:  # Need some trades
+        if len(timeline) < 10:
             return None
 
-        metrics = calculate_performance_metrics(timeline, 1.0)
+        first_capital = timeline[timeline.is_entry]["equity"].iloc[0]
+        metrics = calculate_performance_metrics(timeline, first_capital)
 
         return {
             "fast": fast_window,
@@ -283,138 +284,163 @@ def test_single_strategy(
 
 
 def test_strategy_worker(args):
-    """Worker function for parallel strategy testing."""
     fast, slow, train_data, ema_cache = args
     return test_single_strategy(train_data, fast, slow, ema_cache)
 
 
 def search_optimal_strategies_parallel(
-    max_strategies: int = 5, num_tests: int = 500, n_cores: int = None
+    price_data: pd.DataFrame,
+    max_strategies: int = 5,
+    num_tests: int = 500,
+    n_cores: int = None,
 ) -> tuple:
-    """Search for optimal momentum strategies using parallel random EMA pairs."""
-
     if n_cores is None:
-        n_cores = mp.cpu_count() - 1  # Leave one core free
+        n_cores = mp.cpu_count() - 1
 
     logger.info(
         f"Parallel search testing {num_tests} EMA combinations using {n_cores} cores"
     )
+    logger.info(f"Using {len(price_data)} rows for strategy search")
 
-    # Load and split data once
-    price_data = load_price_data()
-    train_split = int(len(price_data) * 0.8)
-    train_data = price_data.iloc[:train_split]
-    logger.info(f"Using {len(train_data)} rows for strategy search")
+    ema_cache = precompute_all_emas(price_data, 120)
 
-    # Pre-compute EMAs for efficiency
-    ema_cache = precompute_all_emas(train_data, 120)  # Reduced from 250
+    random.seed(42)
+    ema_pairs = list(
+        set((random.randint(2, 30), random.randint(32, 120)) for _ in range(num_tests))
+    )
 
-    # Generate random EMA pairs
-    random.seed(42)  # For reproducibility
-    ema_pairs = []
-
-    for _ in range(num_tests):
-        fast = random.randint(2, 30)  # 2-30 minutes
-        slow = random.randint(fast + 2, 120)  # slow must be > fast, up to 2 hours
-        ema_pairs.append((fast, slow))
-
-    # Remove duplicates
-    ema_pairs = list(set(ema_pairs))
-    logger.info(f"Testing {len(ema_pairs)} unique random EMA combinations")
-
-    # Prepare arguments for parallel processing
-    worker_args = [(fast, slow, train_data, ema_cache) for fast, slow in ema_pairs]
-
-    # Run parallel processing
-    logger.info(f"Starting parallel processing with {n_cores} workers")
+    worker_args = [(f, s, price_data, ema_cache) for f, s in ema_pairs]
 
     with mp.Pool(processes=n_cores) as pool:
         results = pool.map(test_strategy_worker, worker_args)
 
-    # Filter out None results
     valid_results = [r for r in results if r is not None]
-
-    logger.info(
-        f"Found {len(valid_results)} viable strategies from {len(ema_pairs)} tested"
-    )
-
-    # Sort by Sharpe ratio and take the best
     valid_results.sort(key=lambda x: x["sharpe_ratio"], reverse=True)
-    selected = valid_results[:max_strategies]
 
-    logger.info(f"Selected {len(selected)} best strategies:")
+    selected = valid_results[:max_strategies]
+    logger.info("Top strategies selected:")
     for i, s in enumerate(selected):
         logger.info(
-            f"  {i + 1}: EMA({s['fast']},{s['slow']}) - Sharpe={s['sharpe_ratio']:.3f}, Return={s['total_return_pct']:.2f}%"
+            f"  {i + 1}. EMA({s['fast']},{s['slow']}) - Sharpe={s['sharpe_ratio']:.3f}, Return={s['total_return_pct']:.2f}%"
         )
 
-    return [{"fast": s["fast"], "slow": s["slow"]} for s in selected], price_data
+    return [{"fast": s["fast"], "slow": s["slow"]} for s in selected]
 
 
 def main():
-    """Main execution function."""
-    logger.info("=== BTC Momentum Strategy Optimization ===")
+    logger.info("BTC Momentum Strategy Optimization")
 
-    # Find optimal strategies and get data
-    optimal_strategies, price_data = search_optimal_strategies_parallel()
+    df = load_price_data()
 
-    if len(optimal_strategies) == 0:
+    # time-based boundaries
+    end_ts = df.index[-1]
+    last_month_start = end_ts - pd.Timedelta(days=30)
+    two_months_prior = last_month_start - pd.Timedelta(days=60)
+
+    # isolate last 3 months
+    df = df[df.index >= two_months_prior]
+
+    # extract prior 2 months and split 70/30
+    prior_2m = df[(df.index >= two_months_prior) & (df.index < last_month_start)]
+    split_idx = int(len(prior_2m) * 0.7)
+    train_data = prior_2m.iloc[:split_idx]
+    val30_data = prior_2m.iloc[split_idx:]
+
+    # final validation on last month
+    test_data = df[df.index >= last_month_start]
+
+    logger.info(
+        f"Data split - Train: {len(train_data)} rows, Validation: {len(val30_data)} rows, Test: {len(test_data)} rows"
+    )
+
+    strategies = search_optimal_strategies_parallel(train_data)
+
+    if not strategies:
         logger.error("No viable strategies found!")
         return
 
-    # Split data
-    train_split = int(len(price_data) * 0.8)
-    training_data = price_data.iloc[:train_split]
-    validation_data = price_data.iloc[train_split:]
+    def evaluate(stage, data):
+        ema_cache = precompute_all_emas(data, 250)
+        result = backtest_ensemble(data, strategies, ema_cache=ema_cache)
+        if result.empty:
+            logger.error(f"No trades on {stage} set!")
+            return
 
-    logger.info(f"Testing ensemble on {len(training_data)} training rows")
+        capital_0 = (
+            result[result.is_entry]["equity"].iloc[0]
+            if len(result[result.is_entry]) > 0
+            else 1000.0
+        )
+        metrics = calculate_performance_metrics(result, capital_0)
 
-    # Pre-compute EMAs for training data
-    training_ema_cache = precompute_all_emas(training_data, 250)
+        logger.info(f"{stage.title()} Results:")
+        logger.info(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
+        logger.info(f"  Total Return: {metrics['total_return_pct']:.2f}%")
+        logger.info(f"  Max Drawdown: {metrics['max_drawdown_pct']:.2f}%")
+        logger.info(
+            f"  Win Rate: {metrics['win_rate_pct']:.1f}% | Trades/Year: {metrics['trades_per_year']:.0f}"
+        )
 
-    # Run ensemble backtest on training data
-    training_results = backtest_ensemble(
-        training_data, optimal_strategies, ema_cache=training_ema_cache
-    )
+    evaluate("train", train_data)
+    evaluate("validation", val30_data)
+    evaluate("test", test_data)
 
-    if len(training_results) == 0:
-        logger.error("No trades generated on training data!")
-        return
 
-    # Calculate training metrics
-    training_metrics = calculate_performance_metrics(training_results, 1.0)
+def test():
+    logger.info("Ensemble Backtest on Multiple Time Periods")
 
-    logger.info("=== TRAINING ENSEMBLE RESULTS ===")
-    logger.info(f"  Sharpe Ratio: {training_metrics['sharpe_ratio']:.3f}")
-    logger.info(f"  Total Return: {training_metrics['total_return_pct']:.2f}%")
-    logger.info(f"  Trades/Year: {training_metrics['trades_per_year']:.0f}")
-    logger.info(f"  Win Rate: {training_metrics['win_rate_pct']:.1f}%")
-    logger.info(f"  Max Drawdown: {training_metrics['max_drawdown_pct']:.2f}%")
+    df = load_price_data()
+    logger.info(f"Full dataset: {len(df)} rows")
 
-    logger.info(f"Testing ensemble on {len(validation_data)} validation rows")
+    strategies = [
+        {"fast": 15, "slow": 108},
+        {"fast": 18, "slow": 99},
+        {"fast": 15, "slow": 116},
+        {"fast": 19, "slow": 99},
+        {"fast": 16, "slow": 102},
+    ]
 
-    # Pre-compute EMAs for validation data
-    validation_ema_cache = precompute_all_emas(validation_data, 250)
+    # Time-based boundaries
+    end_ts = df.index[-1]
+    last_month_start = end_ts - pd.Timedelta(days=30)
+    two_months_prior = last_month_start - pd.Timedelta(days=60)
 
-    # Run ensemble backtest on validation data
-    ensemble_results = backtest_ensemble(
-        validation_data, optimal_strategies, ema_cache=validation_ema_cache
-    )
+    # Create three datasets
+    last_month_data = df[df.index >= last_month_start]
+    full_3mo_data = df[df.index >= two_months_prior]
+    prior_2mo_data = df[(df.index >= two_months_prior) & (df.index < last_month_start)]
 
-    if len(ensemble_results) == 0:
-        logger.error("No trades generated on validation data!")
-        return
+    def run_backtest(data, name):
+        logger.info(f"{name} ({len(data)} rows):")
 
-    # Calculate validation metrics
-    metrics = calculate_performance_metrics(ensemble_results, 1.0)
+        ema_cache = precompute_all_emas(data, 250)
+        timeline = backtest_ensemble(data, strategies, ema_cache=ema_cache)
 
-    logger.info("=== VALIDATION ENSEMBLE RESULTS ===")
-    logger.info(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
-    logger.info(f"  Total Return: {metrics['total_return_pct']:.2f}%")
-    logger.info(f"  Trades/Year: {metrics['trades_per_year']:.0f}")
-    logger.info(f"  Win Rate: {metrics['win_rate_pct']:.1f}%")
-    logger.info(f"  Max Drawdown: {metrics['max_drawdown_pct']:.2f}%")
+        if timeline.empty:
+            logger.info(f"  No trades generated!")
+            return
+
+        first_capital = (
+            timeline[timeline.is_entry]["equity"].iloc[0]
+            if len(timeline[timeline.is_entry]) > 0
+            else 1000.0
+        )
+        metrics = calculate_performance_metrics(timeline, first_capital)
+
+        logger.info(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
+        logger.info(f"  Total Return: {metrics['total_return_pct']:.2f}%")
+        logger.info(f"  Max Drawdown: {metrics['max_drawdown_pct']:.2f}%")
+        logger.info(
+            f"  Win Rate: {metrics['win_rate_pct']:.1f}% | Trades/Year: {metrics['trades_per_year']:.0f}"
+        )
+        logger.info(f"  Average Hold Time: {metrics['avg_hold_hours']:.2f} hours")
+
+    # Run backtests on all three periods
+    run_backtest(last_month_data, "Last Month Only")
+    run_backtest(full_3mo_data, "Full 3 Months")
+    run_backtest(prior_2mo_data, "Prior 2 Months Only")
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    test()
