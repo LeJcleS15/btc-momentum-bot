@@ -91,6 +91,9 @@ export class MomentumBot {
         connection,
         wallet,
         programID: new PublicKey(sdk.DRIFT_PROGRAM_ID),
+        authority: new PublicKey(config.AUTHORITY_KEY),
+        subAccountIds: [5],
+        activeSubAccountId: 5,
         accountSubscription: {
           type: "websocket",
           //@ts-ignore

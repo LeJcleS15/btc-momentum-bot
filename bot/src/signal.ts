@@ -113,22 +113,30 @@ export class SignalCache {
   private isUpdating: boolean = false;
 
   public async getSignal(): Promise<{ signal: Signal; age: number }> {
-    const now = Date.now();
-    const signalAge = now - this.lastUpdate;
+    // const now = Date.now();
+    // const signalAge = now - this.lastUpdate;
 
-    if (signalAge > 55000 && !this.isUpdating) {
-      this.isUpdating = true;
-      try {
-        this.currentSignal = await generateSignal();
-        this.lastUpdate = now;
-      } finally {
-        this.isUpdating = false;
-      }
-    }
+    // if (signalAge > 55000 && !this.isUpdating) {
+    //   this.isUpdating = true;
+    //   try {
+    //     this.currentSignal = await generateSignal();
+    //     this.lastUpdate = now;
+    //   } finally {
+    //     this.isUpdating = false;
+    //   }
+    // }
+
+    this.currentSignal = await generateSignal();
+    this.lastUpdate = Date.now();
 
     return {
       signal: this.currentSignal,
-      age: signalAge,
+      age: 0, // Always fresh
     };
+
+    // return {
+    //   signal: this.currentSignal,
+    //   age: signalAge,
+    // };
   }
 }
