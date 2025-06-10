@@ -16,7 +16,6 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console(), new winston.transports.File({ filename: "bot.log" })],
 });
 
-// Helper methods
 export const log = {
   cycle: (cycleId: number, message: string, data?: any) =>
     logger.info(message, {
