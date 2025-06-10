@@ -125,7 +125,7 @@ def calculate_mtm(position: Position, current_price: float) -> MarkToMarket:
 def backtest_ensemble(
     df: pd.DataFrame,
     strategies: List[dict],
-    btc_qty: float = 1,
+    btc_qty: float = 0.03,
     ema_cache: dict = None,
 ) -> pd.DataFrame:
     if len(strategies) == 0:
@@ -154,6 +154,7 @@ def backtest_ensemble(
             "qty": 0.0,
             "pnl": 0.0,
             "equity": 0.0,
+            "volume_usd": 0.0,
         }
 
         if position is not None:
@@ -164,6 +165,7 @@ def backtest_ensemble(
 
             if signal != position.signal:
                 snap["is_exit"] = True
+                snap["volume_usd"] += abs(position.quantity * price)
                 current_equity = mtm.equity
 
                 if signal != 0:
@@ -171,6 +173,7 @@ def backtest_ensemble(
                     snap["is_entry"] = True
                     snap["qty"] = position.quantity
                     snap["equity"] = current_equity
+                    snap["volume_usd"] += abs(btc_qty * price)
                 else:
                     position = None
 
@@ -179,6 +182,7 @@ def backtest_ensemble(
             position = open_new_position(signal, price, btc_qty, initial_capital_usd)
             snap["is_entry"] = True
             snap["qty"] = position.quantity
+            snap["volume_usd"] += abs(btc_qty * price)
             snap["equity"] = initial_capital_usd
 
         else:
@@ -205,6 +209,7 @@ def backtest_ensemble(
                 "qty": position.quantity,
                 "pnl": mtm.pnl,
                 "equity": mtm.equity,
+                "volume_usd": abs(position.quantity * last_row.price),
             }
         )
 
@@ -223,16 +228,27 @@ def calculate_performance_metrics(timeline: pd.DataFrame, capital_0: float) -> d
                 "win_rate_pct",
                 "trades_per_year",
                 "avg_hold_hours",
+                "total_volume_usd",
+                "avg_daily_volume",
+                "avg_hourly_volume",
             ]
         }
 
     equity = timeline["equity"].ffill().dropna()
-    duration = (timeline.index[-1] - timeline.index[0]).total_seconds() / 86400
+    duration_days = (timeline.index[-1] - timeline.index[0]).total_seconds() / 86400
+    duration_hours = duration_days * 24
 
-    trades = timeline[timeline.is_exit]
-    trade_returns = trades["equity"].diff().dropna()
-    hold_durations = trades.index.to_series().diff().dt.total_seconds().dropna() / 3600
+    # Trade analysis
+    exit_trades = timeline[timeline.is_exit]
+    trade_returns = exit_trades["equity"].diff().dropna()
+    hold_durations = (
+        exit_trades.index.to_series().diff().dt.total_seconds().dropna() / 3600
+    )
 
+    # Volume calculation - use the volume_usd field directly
+    total_volume_usd = timeline["volume_usd"].sum()
+
+    # Risk-free rate calculation
     rf_ann = 0.0406
     avg_hold = hold_durations.mean() if not hold_durations.empty else 1
     rf_trade = rf_ann * (avg_hold / 8760)
@@ -249,8 +265,17 @@ def calculate_performance_metrics(timeline: pd.DataFrame, capital_0: float) -> d
         "win_rate_pct": 100 * (trade_returns > 0).mean()
         if len(trade_returns) > 0
         else 0,
-        "trades_per_year": len(trade_returns) / duration * 365 if duration > 0 else 0,
+        "trades_per_year": len(trade_returns) / duration_days * 365
+        if duration_days > 0
+        else 0,
         "avg_hold_hours": avg_hold,
+        "total_volume_usd": total_volume_usd,
+        "avg_daily_volume": total_volume_usd / duration_days
+        if duration_days > 0
+        else 0,
+        "avg_hourly_volume": total_volume_usd / duration_hours
+        if duration_hours > 0
+        else 0,
     }
 
 
@@ -262,7 +287,9 @@ def test_single_strategy(
 
     try:
         config = [{"fast": fast_window, "slow": slow_window}]
-        timeline = backtest_ensemble(price_data, config, ema_cache=ema_cache)
+        timeline = backtest_ensemble(
+            price_data, config, btc_qty=0.03, ema_cache=ema_cache
+        )
 
         if len(timeline) < 10:
             return None
@@ -418,7 +445,9 @@ def main():
         logger.info(f"{period_name} ({len(data)} rows):")
 
         ema_cache = precompute_all_emas(data, 250)
-        timeline = backtest_ensemble(data, strategies, ema_cache=ema_cache)
+        timeline = backtest_ensemble(
+            data, strategies, btc_qty=0.03, ema_cache=ema_cache
+        )
 
         if timeline.empty:
             logger.info("  No trades generated!")
@@ -453,7 +482,10 @@ def main():
         logger.info(
             f"  Win Rate: {metrics['win_rate_pct']:.1f}% | Trades/Year: {metrics['trades_per_year']:.0f}"
         )
-        logger.info(f"  Average Hold Time: {metrics['avg_hold_hours']:.2f} hours")
+        logger.info(f"  Total Volume: ${metrics['total_volume_usd']:,.0f}")
+        logger.info(
+            f"  Daily Volume: ${metrics['avg_daily_volume']:,.0f} | Hourly Volume: ${metrics['avg_hourly_volume']:,.0f}"
+        )
 
         return timeline, metrics
 

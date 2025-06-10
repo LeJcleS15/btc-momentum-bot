@@ -37,7 +37,7 @@ st.title("BTC Momentum Strategy Dashboard")
 st.markdown("""
 ### Strategy Overview
 - **Asset:** BTC/USD (1-minute data, 3 months)
-- **Position Size:** Fixed 1 BTC per trade
+- **Position Size:** Fixed 0.03 BTC per trade
 - **Strategies:** EMA Crossover Ensemble (5 pairs)
 - **Signal:** Median of fast/slow EMA crossovers
 - **Volume Filter:** Trade only when volume > 20-period average
@@ -82,6 +82,9 @@ metrics_data = {
     "Win Rate (%)": f"{period_summary['win_rate_pct']:.1f}",
     "Trades Per Year": f"{period_summary['trades_per_year']:.0f}",
     "Avg Hold Time (hrs)": f"{period_summary['avg_hold_hours']:.2f}",
+    "Total Volume (USD)": f"{period_summary['total_volume_usd']:,.0f}",
+    "Daily Volume (USD)": f"{period_summary['avg_daily_volume']:,.0f}",
+    "Hourly Volume (USD)": f"{period_summary['avg_hourly_volume']:,.0f}",
 }
 
 metrics_df = pd.DataFrame(list(metrics_data.items()), columns=["Metric", "Value"])
@@ -122,6 +125,30 @@ fig_pnl.update_layout(
     title="Cumulative PnL",
 )
 st.plotly_chart(fig_pnl, use_container_width=True)
+
+st.markdown("---")
+st.markdown("### Volume Analysis")
+
+# Daily volume chart
+daily_volume = timeline_df.groupby(timeline_df.index.date)["volume_usd"].sum()
+
+fig_daily_vol = go.Figure()
+fig_daily_vol.add_trace(
+    go.Bar(
+        x=daily_volume.index,
+        y=daily_volume.values,
+        name="Daily Volume",
+        marker=dict(color="#00CC96"),
+    )
+)
+fig_daily_vol.update_layout(
+    height=300,
+    title="Daily Trading Volume",
+    xaxis_title="Date",
+    yaxis_title="Volume (USD)",
+    margin=dict(t=20, b=20),
+)
+st.plotly_chart(fig_daily_vol, use_container_width=True)
 
 # Volatility analysis
 pct_change = equity.pct_change().fillna(0)
@@ -231,7 +258,16 @@ trade_log = timeline_df[timeline_df["is_exit"] | timeline_df["is_entry"]].copy()
 
 if not trade_log.empty:
     # Display trade log
-    display_cols = ["signal", "price", "qty", "pnl", "equity", "is_entry", "is_exit"]
+    display_cols = [
+        "signal",
+        "price",
+        "qty",
+        "pnl",
+        "equity",
+        "volume_usd",
+        "is_entry",
+        "is_exit",
+    ]
     available_cols = [col for col in display_cols if col in trade_log.columns]
     st.dataframe(trade_log[available_cols], use_container_width=True, height=400)
 
