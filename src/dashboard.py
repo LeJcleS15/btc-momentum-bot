@@ -85,6 +85,8 @@ metrics_data = {
     "Total Volume (USD)": f"{period_summary['total_volume_usd']:,.0f}",
     "Daily Volume (USD)": f"{period_summary['avg_daily_volume']:,.0f}",
     "Hourly Volume (USD)": f"{period_summary['avg_hourly_volume']:,.0f}",
+    "Actual Trades": f"{period_summary['actual_trades']:,}",
+    "Signal Flips": f"{period_summary['signal_flips']:,}",
 }
 
 metrics_df = pd.DataFrame(list(metrics_data.items()), columns=["Metric", "Value"])

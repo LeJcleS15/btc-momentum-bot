@@ -231,6 +231,8 @@ def calculate_performance_metrics(timeline: pd.DataFrame, capital_0: float) -> d
                 "total_volume_usd",
                 "avg_daily_volume",
                 "avg_hourly_volume",
+                "actual_trades",
+                "signal_flips",
             ]
         }
 
@@ -245,7 +247,10 @@ def calculate_performance_metrics(timeline: pd.DataFrame, capital_0: float) -> d
         exit_trades.index.to_series().diff().dt.total_seconds().dropna() / 3600
     )
 
-    # Volume calculation - use the volume_usd field directly
+    # Count signal flips (trades with both entry and exit in same row)
+    signal_flips = timeline[timeline.is_entry & timeline.is_exit]
+
+    # Volume calculation
     total_volume_usd = timeline["volume_usd"].sum()
 
     # Risk-free rate calculation
@@ -276,6 +281,8 @@ def calculate_performance_metrics(timeline: pd.DataFrame, capital_0: float) -> d
         "avg_hourly_volume": total_volume_usd / duration_hours
         if duration_hours > 0
         else 0,
+        "actual_trades": len(trade_returns),
+        "signal_flips": len(signal_flips),
     }
 
 
@@ -485,6 +492,9 @@ def main():
         logger.info(f"  Total Volume: ${metrics['total_volume_usd']:,.0f}")
         logger.info(
             f"  Daily Volume: ${metrics['avg_daily_volume']:,.0f} | Hourly Volume: ${metrics['avg_hourly_volume']:,.0f}"
+        )
+        logger.info(
+            f"  Actual Trades: {metrics['actual_trades']} | Signal Flips: {metrics['signal_flips']} | Trades/Year: {metrics['trades_per_year']:.0f}"
         )
 
         return timeline, metrics
