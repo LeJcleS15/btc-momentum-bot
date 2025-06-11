@@ -1,59 +1,63 @@
-import { MomentumBot } from "./bot";
-import { log } from "./logger";
+import { MomentumBot } from './bot';
+import { log } from './logger';
 
 let bot: MomentumBot | null = null;
 let isShuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {
-  if (isShuttingDown) return;
+	if (isShuttingDown) return;
 
-  isShuttingDown = true;
-  log.cycle(0, "Shutdown initiated", { signal });
+	isShuttingDown = true;
+	log.cycle(0, 'Shutdown initiated', { signal });
 
-  try {
-    if (bot) {
-      await bot.stop();
-    }
-    log.cycle(0, "Shutdown completed");
-    process.exit(0);
-  } catch (error) {
-    log.error("SHUTDOWN", "Shutdown failed", error as Error);
-    process.exit(1);
-  }
+	try {
+		if (bot) {
+			await bot.stop();
+		}
+		log.cycle(0, 'Shutdown completed');
+		process.exit(0);
+	} catch (error) {
+		log.error('SHUTDOWN', 'Shutdown failed', error as Error);
+		process.exit(1);
+	}
 }
 
 async function main(): Promise<void> {
-  try {
-    log.cycle(0, "Momentum bot starting");
+	try {
+		log.cycle(0, 'Momentum bot starting');
 
-    process.on("SIGINT", () => shutdown("SIGINT"));
-    process.on("SIGTERM", () => shutdown("SIGTERM"));
-    process.on("uncaughtException", (error) => {
-      log.error("FATAL", "Uncaught exception", error);
-      shutdown("UNCAUGHT_EXCEPTION");
-    });
-    process.on("unhandledRejection", (reason) => {
-      log.error("FATAL", "Unhandled rejection", new Error(String(reason)));
-      shutdown("UNHANDLED_REJECTION");
-    });
+		process.on('SIGINT', () => shutdown('SIGINT'));
+		process.on('SIGTERM', () => shutdown('SIGTERM'));
+		process.on('uncaughtException', (error) => {
+			log.error('FATAL', 'Uncaught exception', error);
+			shutdown('UNCAUGHT_EXCEPTION');
+		});
+		process.on('unhandledRejection', (reason) => {
+			log.error('FATAL', 'Unhandled rejection', new Error(String(reason)));
+			shutdown('UNHANDLED_REJECTION');
+		});
 
-    bot = new MomentumBot();
+		bot = new MomentumBot();
 
-    const initResult = await bot.initialize();
-    if (!initResult.success) {
-      log.error("MAIN", "Bot initialization failed", new Error(initResult.error));
-      process.exit(1);
-    }
+		const initResult = await bot.initialize();
+		if (!initResult.success) {
+			log.error(
+				'MAIN',
+				'Bot initialization failed',
+				new Error(initResult.error)
+			);
+			process.exit(1);
+		}
 
-    bot.start();
-    log.cycle(0, "Momentum bot running");
-  } catch (error) {
-    log.error("MAIN", "Fatal error", error as Error);
-    process.exit(1);
-  }
+		bot.start();
+		log.cycle(0, 'Momentum bot running');
+	} catch (error) {
+		log.error('MAIN', 'Fatal error', error as Error);
+		process.exit(1);
+	}
 }
 
 main().catch((error) => {
-  log.error("MAIN", "Unhandled main error", error as Error);
-  process.exit(1);
+	log.error('MAIN', 'Unhandled main error', error as Error);
+	process.exit(1);
 });
