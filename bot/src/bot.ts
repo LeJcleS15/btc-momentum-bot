@@ -502,7 +502,33 @@ export class MomentumBot {
 			}
 
 			const result = (await response.json()) as any;
-			return result.transaction_signature;
+			const txSignature = result.transaction_signature;
+
+			if (!txSignature || txSignature.length < 87) {
+				throw new Error(`Invalid swift signature length: ${txSignature}`);
+			}
+
+			// verify with exchange (30 second timeout)
+			if (SWIFT_CONFIG.VERIFY_WITH_EXCHANGE) {
+				const maxWaitTime = 30000; // 30 seconds
+				const pollInterval = 2000; // 2 seconds
+				const startTime = Date.now();
+
+				while (Date.now() - startTime < maxWaitTime) {
+					const confirmResponse = await fetch(
+						`${SWIFT_CONFIG.API_URL}/confirmation/hash-status?hash=${encodeURIComponent(txSignature)}`,
+						{ signal: AbortSignal.timeout(5000) }
+					);
+
+					if (confirmResponse.ok) {
+						break; // Order confirmed/filled
+					}
+
+					await new Promise((resolve) => setTimeout(resolve, pollInterval));
+				}
+			}
+
+			return txSignature;
 		} catch (error) {
 			throw new Error(`Swift failed: ${(error as Error).message}`);
 		}
@@ -515,26 +541,26 @@ export class MomentumBot {
 		orderType: string
 	): Promise<string> {
 		// Try Swift first (open)
-		if (SWIFT_CONFIG.ENABLED && !reduceOnly) {
-			try {
-				log.order('SWIFT', 'BTC-PERP', `Attempting Swift ${orderType}`, {
-					direction: direction === PositionDirection.LONG ? 'LONG' : 'SHORT',
-					size: baseAssetAmount.toNumber() / BASE_PRECISION_NUM,
-				});
+		// if (SWIFT_CONFIG.ENABLED && !reduceOnly) {
+		// 	try {
+		// 		log.order('SWIFT', 'BTC-PERP', `Attempting Swift ${orderType}`, {
+		// 			direction: direction === PositionDirection.LONG ? 'LONG' : 'SHORT',
+		// 			size: baseAssetAmount.toNumber() / BASE_PRECISION_NUM,
+		// 		});
 
-				const tx = await this.executeSwiftOrder(direction, baseAssetAmount);
+		// 		const tx = await this.executeSwiftOrder(direction, baseAssetAmount);
 
-				log.order('SWIFT', 'BTC-PERP', `Swift ${orderType} successful`, {
-					txSignature: tx,
-				});
-				return tx;
-			} catch (error) {
-				log.risk('Swift order failed, falling back to market order', {
-					error: (error as Error).message,
-					orderType,
-				});
-			}
-		}
+		// 		log.order('SWIFT', 'BTC-PERP', `Swift ${orderType} successful`, {
+		// 			txSignature: tx,
+		// 		});
+		// 		return tx;
+		// 	} catch (error) {
+		// 		log.risk('Swift order failed, falling back to market order', {
+		// 			error: (error as Error).message,
+		// 			orderType,
+		// 		});
+		// 	}
+		// }
 
 		// Fallback to market order with retries
 		for (let attempt = 1; attempt <= RISK_CONFIG.MAX_RETRIES; attempt++) {

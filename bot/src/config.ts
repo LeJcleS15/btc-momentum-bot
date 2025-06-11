@@ -32,6 +32,7 @@ export const TRADING_CONFIG = {
 
 export const SWIFT_CONFIG = {
 	API_URL: 'https://swift.drift.trade/orders',
+	VERIFY_WITH_EXCHANGE: true,
 	ENABLED: true,
 	TIMEOUT_MS: 5000,
 	AUCTION_DURATION_SLOTS: 50,
