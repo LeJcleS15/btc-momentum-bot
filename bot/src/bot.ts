@@ -16,6 +16,7 @@ import {
 	MarketType,
 	OrderTriggerCondition,
 	PostOnlyParams,
+	type PerpMarketAccount,
 } from '@drift-labs/sdk';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { Connection } from '@solana/web3.js';
@@ -50,6 +51,9 @@ export class MomentumBot {
 	private cycleInterval: NodeJS.Timeout | null = null;
 	private signalCache = new SignalCache();
 
+	private strategyStartingEquity: number = 0;
+	private strategyRealizedPnl: number = 0;
+
 	async initialize(): Promise<{ success: boolean; error?: string }> {
 		try {
 			log.cycle(0, 'Bot initialization started');
@@ -61,6 +65,14 @@ export class MomentumBot {
 				btcQuantity: TRADING_CONFIG.BTC_QUANTITY,
 				cycleInterval: `${TRADING_CONFIG.CYCLE_INTERVAL_MS / 1000}s`,
 				env: TRADING_CONFIG.ENV,
+			});
+
+			const user = driftClient.getUser();
+			this.strategyStartingEquity =
+				user.getTotalCollateral().toNumber() / QUOTE_PRECISION_NUM;
+
+			log.cycle(0, 'Strategy tracking initialized', {
+				startingEquity: this.strategyStartingEquity,
 			});
 
 			this.reconstructPosition();
@@ -582,6 +594,29 @@ export class MomentumBot {
 		});
 	}
 
+	private calculatePositionPnl(
+		signal: Signal,
+		size: number,
+		entryPrice: number,
+		currentPrice: number
+	): number {
+		const positionValue = size * currentPrice;
+		const entryValue = size * entryPrice;
+		return signal > 0 ? positionValue - entryValue : entryValue - positionValue;
+	}
+
+	private getPositionEntryPrice(): number {
+		const perpPosition = driftClient.getUser().getPerpPosition(btcMarketIndex);
+		if (!perpPosition) return 0;
+
+		return (
+			((perpPosition.quoteEntryAmount.abs().toNumber() /
+				perpPosition.baseAssetAmount.abs().toNumber()) *
+				BASE_PRECISION_NUM) /
+			QUOTE_PRECISION_NUM
+		);
+	}
+
 	private async closePosition(): Promise<void> {
 		const position = this.getCurrentBTCPosition();
 
@@ -591,6 +626,7 @@ export class MomentumBot {
 			return;
 		}
 
+		const entryPrice = this.getPositionEntryPrice();
 		const currentStr = getSignalString(position.signal);
 		const direction =
 			position.signal > 0 ? PositionDirection.SHORT : PositionDirection.LONG;
@@ -623,6 +659,31 @@ export class MomentumBot {
 			'Close'
 		);
 
+		// Get close price after order execution
+		const btcMarket = driftClient.getPerpMarketAccount(
+			btcMarketIndex
+		) as PerpMarketAccount;
+
+		const closePrice =
+			btcMarket.amm.lastMarkPriceTwap.toNumber() / QUOTE_PRECISION_NUM;
+
+		if (entryPrice > 0) {
+			const realizedPnl = this.calculatePositionPnl(
+				position.signal,
+				position.size,
+				entryPrice,
+				closePrice
+			);
+			this.strategyRealizedPnl += realizedPnl;
+
+			log.position('Position closed with realized PnL', {
+				entryPrice: entryPrice.toFixed(2),
+				closePrice: closePrice.toFixed(2),
+				realizedPnl: realizedPnl.toFixed(6),
+				totalStrategyPnl: this.strategyRealizedPnl.toFixed(6),
+			});
+		}
+
 		log.order('CLOSE', 'BTC-PERP', `${currentStr} position closed`, {
 			txSignature: tx,
 			quantity: position.size,
@@ -637,11 +698,34 @@ export class MomentumBot {
 		try {
 			const user = driftClient.getUser();
 
+			const accountEquity =
+				user.getTotalCollateral().toNumber() / QUOTE_PRECISION_NUM;
+			const accountUnrealizedPnl =
+				user.getUnrealizedPNL().toNumber() / QUOTE_PRECISION_NUM;
+
+			const position = this.getCurrentBTCPosition();
+			const btcMarket = driftClient.getPerpMarketAccount(
+				btcMarketIndex
+			) as PerpMarketAccount;
+
+			const markPrice =
+				btcMarket.amm.lastMarkPriceTwap.toNumber() / QUOTE_PRECISION_NUM;
+
+			const strategyEquity =
+				this.strategyStartingEquity + this.strategyRealizedPnl;
+
 			return {
 				timestamp: Date.now(),
 				cycle: this.cycleCount,
-				equity: user.getTotalCollateral().toNumber() / QUOTE_PRECISION_NUM,
-				unrealizedPnl: user.getUnrealizedPNL().toNumber() / QUOTE_PRECISION_NUM,
+				accountEquity,
+				accountUnrealizedPnl,
+				strategyEquity,
+				strategyRealizedPnl: this.strategyRealizedPnl,
+				position: {
+					size: position.size,
+					entryPrice: position.signal !== 0 ? this.getPositionEntryPrice() : 0,
+					markPrice,
+				},
 			};
 		} catch (error) {
 			log.error('PERFORMANCE', 'Failed to capture snapshot', error as Error);

@@ -22,6 +22,13 @@ export type LiquidityCheck = {
 export type PerformanceSnapshot = {
 	timestamp: number;
 	cycle: number;
-	equity: number;
-	unrealizedPnl: number;
+	accountEquity: number;
+	accountUnrealizedPnl: number;
+	strategyEquity: number;
+	strategyRealizedPnl: number;
+	position: {
+		size: number;
+		entryPrice: number;
+		markPrice: number;
+	};
 };

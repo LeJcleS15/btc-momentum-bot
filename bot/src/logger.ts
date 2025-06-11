@@ -43,9 +43,6 @@ export const log = {
 	position: (message: string, data?: any) =>
 		logger.info(message, { component: 'POSITION', data }),
 
-	performance: (message: string, data?: any) =>
-		logger.info(message, { component: 'PERFORMANCE', data }),
-
 	snapshot: (snapshot: PerformanceSnapshot) =>
 		logger.info('SNAPSHOT', {
 			component: 'PERFORMANCE',
