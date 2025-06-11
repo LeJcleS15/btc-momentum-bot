@@ -502,7 +502,7 @@ export class MomentumBot {
 			}
 
 			const result = (await response.json()) as any;
-			return result.transaction_signature || `swift-${now}`;
+			return result.transaction_signature;
 		} catch (error) {
 			throw new Error(`Swift failed: ${(error as Error).message}`);
 		}
@@ -514,8 +514,8 @@ export class MomentumBot {
 		reduceOnly: boolean,
 		orderType: string
 	): Promise<string> {
-		// Try Swift first
-		if (SWIFT_CONFIG.ENABLED) {
+		// Try Swift first (open)
+		if (SWIFT_CONFIG.ENABLED && !reduceOnly) {
 			try {
 				log.order('SWIFT', 'BTC-PERP', `Attempting Swift ${orderType}`, {
 					direction: direction === PositionDirection.LONG ? 'LONG' : 'SHORT',
