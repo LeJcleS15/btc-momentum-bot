@@ -17,6 +17,7 @@ import {
 	type PerpMarketAccount,
 	type OrderParams,
 	getMarketOrderParams,
+	getSignedMsgUserAccountPublicKey,
 } from '@drift-labs/sdk';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { Connection } from '@solana/web3.js';
@@ -141,6 +142,33 @@ export class MomentumBot {
 			await driftClient.subscribe();
 			const user = driftClient.getUser();
 			await user.exists();
+
+			// const signedMsgUserAccount = getSignedMsgUserAccountPublicKey(
+			// 	driftClient.program.programId,
+			// 	new PublicKey(config.AUTHORITY_KEY)
+			// );
+
+			// const acc =
+			// 	await driftClient.connection.getAccountInfo(signedMsgUserAccount);
+			// if (acc === null) {
+			// 	log.cycle(
+			// 		0,
+			// 		`Creating SignedMsgUserAccount for ${config.AUTHORITY_KEY}`
+			// 	);
+			// 	const [txSig, signedMsgUserAccountPublicKey] =
+			// 		await driftClient.initializeSignedMsgUserOrders(
+			// 			new PublicKey(config.AUTHORITY_KEY),
+			// 			8
+			// 		);
+			// 	log.cycle(0, 'SignedMsgUserAccount created', {
+			// 		account: signedMsgUserAccountPublicKey.toBase58(),
+			// 		txSignature: txSig,
+			// 	});
+			// } else {
+			// 	log.cycle(0, 'SignedMsgUserAccount already exists', {
+			// 		account: signedMsgUserAccount.toBase58(),
+			// 	});
+			// }
 
 			const btcMarket = PerpMarkets[TRADING_CONFIG.ENV].find(
 				(market) => market.baseAssetSymbol === 'BTC'
@@ -409,8 +437,7 @@ export class MomentumBot {
 
 	private async executeSwiftOrder(
 		direction: PositionDirection,
-		baseAssetAmount: BN,
-		orderType: string
+		baseAssetAmount: BN
 	): Promise<string> {
 		try {
 			const oraclePrice =
@@ -442,15 +469,18 @@ export class MomentumBot {
 
 			const orderMessage = {
 				signedMsgOrderParams: makerOrderParams as OrderParams,
-				subAccountId: driftClient.activeSubAccountId,
+				// subAccountId: 5,
 				slot: new BN(await driftClient.connection.getSlot()),
 				uuid,
 				stopLossOrderParams: null,
 				takeProfitOrderParams: null,
+				takerPubkey: new PublicKey(
+					'CHyy6rPYPN79Ka5E8dxy8ANpUzs4qkQXaTJguUfBP3SN'
+				),
 			};
 
 			const { orderParams: message, signature } =
-				driftClient.signSignedMsgOrderParamsMessage(orderMessage);
+				driftClient.signSignedMsgOrderParamsMessage(orderMessage, true);
 
 			const response = await fetch(SWIFT_CONFIG.API_URL, {
 				method: 'POST',
@@ -460,8 +490,8 @@ export class MomentumBot {
 					market_type: 'perp',
 					message: message.toString(),
 					signature: signature.toString('base64'),
-					signing_authority: new PublicKey(config.AUTHORITY_KEY).toBase58(),
-					taker_authority: driftClient.wallet.publicKey.toBase58(),
+					taker_authority: driftClient.authority.toBase58(),
+					signing_authority: driftClient.wallet.publicKey.toBase58(),
 				}),
 				signal: AbortSignal.timeout(SWIFT_CONFIG.TIMEOUT_MS),
 			});
@@ -485,30 +515,26 @@ export class MomentumBot {
 		orderType: string
 	): Promise<string> {
 		// Try Swift first
-		// if (!reduceOnly && SWIFT_CONFIG.ENABLED) {
-		// 	try {
-		// 		log.order('SWIFT', 'BTC-PERP', `Attempting Swift ${orderType}`, {
-		// 			direction: direction === PositionDirection.LONG ? 'LONG' : 'SHORT',
-		// 			size: baseAssetAmount.toNumber() / BASE_PRECISION_NUM,
-		// 		});
+		if (SWIFT_CONFIG.ENABLED) {
+			try {
+				log.order('SWIFT', 'BTC-PERP', `Attempting Swift ${orderType}`, {
+					direction: direction === PositionDirection.LONG ? 'LONG' : 'SHORT',
+					size: baseAssetAmount.toNumber() / BASE_PRECISION_NUM,
+				});
 
-		// 		const tx = await this.executeSwiftOrder(
-		// 			direction,
-		// 			baseAssetAmount,
-		// 			orderType
-		// 		);
+				const tx = await this.executeSwiftOrder(direction, baseAssetAmount);
 
-		// 		log.order('SWIFT', 'BTC-PERP', `Swift ${orderType} successful`, {
-		// 			txSignature: tx,
-		// 		});
-		// 		return tx;
-		// 	} catch (error) {
-		// 		log.risk('Swift order failed, falling back to market order', {
-		// 			error: (error as Error).message,
-		// 			orderType,
-		// 		});
-		// 	}
-		// }
+				log.order('SWIFT', 'BTC-PERP', `Swift ${orderType} successful`, {
+					txSignature: tx,
+				});
+				return tx;
+			} catch (error) {
+				log.risk('Swift order failed, falling back to market order', {
+					error: (error as Error).message,
+					orderType,
+				});
+			}
+		}
 
 		// Fallback to market order with retries
 		for (let attempt = 1; attempt <= RISK_CONFIG.MAX_RETRIES; attempt++) {
