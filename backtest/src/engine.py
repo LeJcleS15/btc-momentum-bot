@@ -516,9 +516,9 @@ def main():
         all_metrics.append(metrics_row)
 
         # Save timeline for this period
-        # timeline_file = f"./results/timeline_{period_key}.csv"
-        # timeline.to_csv(timeline_file)
-        # logger.info(f"  Saved timeline to {timeline_file}")
+        timeline_file = f"./results/timeline_{period_key}.csv"
+        timeline.to_csv(timeline_file)
+        logger.info(f"  Saved timeline to {timeline_file}")
         logger.info(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
         logger.info(f"  Total Return: {metrics['total_return_pct']:.2f}%")
         logger.info(f"  Max Drawdown: {metrics['max_drawdown_pct']:.2f}%")
@@ -536,9 +536,9 @@ def main():
         return timeline, metrics
 
     # Create results directory
-    # import os
+    import os
 
-    # os.makedirs("./results", exist_ok=True)
+    os.makedirs("./results", exist_ok=True)
 
     # Run backtests on all three periods
     for period_key, data in datasets.items():
@@ -550,12 +550,12 @@ def main():
         run_backtest(data, period_names[period_key], period_key)
 
     # Save summary metrics
-    # if all_metrics:
-    #     metrics_df = pd.DataFrame(all_metrics)
-    #     metrics_df.to_csv("./results/performance_summary.csv", index=False)
-    #     logger.info("Saved performance summary to ./results/performance_summary.csv")
+    if all_metrics:
+        metrics_df = pd.DataFrame(all_metrics)
+        metrics_df.to_csv("./results/performance_summary.csv", index=False)
+        logger.info("Saved performance summary to ./results/performance_summary.csv")
 
-    # logger.info("All results saved to ./results/ directory")
+    logger.info("All results saved to ./results/ directory")
 
 
 if __name__ == "__main__":
