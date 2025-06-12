@@ -27,7 +27,7 @@ class MarkToMarket(NamedTuple):
     equity: float  # USD
 
 
-def load_price_data(file_path: str = "./data/btc_1m_3months.json") -> pd.DataFrame:
+def load_price_data(file_path: str = "./data/btc_1m_185days.json") -> pd.DataFrame:
     logger.info(f"Loading price data from {file_path}")
 
     with open(file_path) as f:
@@ -65,7 +65,7 @@ def generate_momentum_signal(
     fast_ema: pd.Series,
     slow_ema: pd.Series,
     volume: pd.Series = None,
-    vol_threshold: float = 0.01,
+    vol_threshold: float = 2,
 ) -> pd.Series:
     momentum = fast_ema - slow_ema
     price_signal = np.sign(momentum).shift(2)
@@ -116,10 +116,8 @@ def open_new_position(
     return Position(signal, price, btc_qty, capital)
 
 
-def calculate_mtm(position: Position, current_price: float) -> MarkToMarket:
-    pnl = position.signal * position.quantity * (current_price - position.entry_price)
-    equity = position.capital + pnl
-    return MarkToMarket(pnl, equity)
+def calculate_unrealized_pnl(position: Position, current_price: float) -> float:
+    return position.signal * position.quantity * (current_price - position.entry_price)
 
 
 def backtest_ensemble(
@@ -138,12 +136,23 @@ def backtest_ensemble(
 
     timeline = []
     position: Optional[Position] = None
-    initial_capital_usd = 0
+
+    # Fixed initial capital - never changes
+    initial_capital = btc_qty * df_signals.iloc[0]["price"]
+    cumulative_realized_pnl = 0.0
 
     for _, row in df_signals.iterrows():
         ts = row.name
         price = row.price
         signal = int(row.ensemble_signal)
+
+        # Calculate current unrealized PnL
+        unrealized_pnl = 0.0
+        if position is not None:
+            unrealized_pnl = calculate_unrealized_pnl(position, price)
+
+        # Total equity = initial capital + all realized PnL + current unrealized PnL
+        total_equity = initial_capital + cumulative_realized_pnl + unrealized_pnl
 
         snap = {
             "ts": ts,
@@ -151,67 +160,65 @@ def backtest_ensemble(
             "signal": signal,
             "is_entry": False,
             "is_exit": False,
-            "qty": 0.0,
-            "pnl": 0.0,
-            "equity": 0.0,
+            "qty": position.quantity if position else 0.0,
+            "pnl": unrealized_pnl,
+            "equity": total_equity,
             "volume_usd": 0.0,
         }
 
+        # Handle position changes
         if position is not None:
-            mtm = calculate_mtm(position, price)
-            snap["qty"] = position.quantity
-            snap["pnl"] = mtm.pnl
-            snap["equity"] = mtm.equity
-
             if signal != position.signal:
+                # Exit current position - realize PnL
                 snap["is_exit"] = True
-                snap["volume_usd"] += abs(position.quantity * price)
-                current_equity = mtm.equity
+                snap["volume_usd"] = abs(position.quantity * price)
+                cumulative_realized_pnl += unrealized_pnl
+                position = None
 
+                # Update after realizing PnL
+                snap["equity"] = initial_capital + cumulative_realized_pnl
+                snap["pnl"] = 0.0
+                snap["qty"] = 0.0
+
+                # Enter new position if signal != 0
                 if signal != 0:
-                    position = open_new_position(signal, price, btc_qty, current_equity)
+                    position = open_new_position(
+                        signal, price, btc_qty, initial_capital
+                    )
                     snap["is_entry"] = True
-                    snap["qty"] = position.quantity
-                    snap["equity"] = current_equity
+                    snap["qty"] = btc_qty
                     snap["volume_usd"] += abs(btc_qty * price)
-                else:
-                    position = None
 
         elif signal != 0:
-            initial_capital_usd = price * btc_qty
-            position = open_new_position(signal, price, btc_qty, initial_capital_usd)
+            # No current position, but signal says enter
+            position = open_new_position(signal, price, btc_qty, initial_capital)
             snap["is_entry"] = True
-            snap["qty"] = position.quantity
-            snap["volume_usd"] += abs(btc_qty * price)
-            snap["equity"] = initial_capital_usd
-
-        else:
-            # When no position and no signal, carry forward last equity
-            if len(timeline) > 0:
-                snap["equity"] = timeline[-1]["equity"]
+            snap["qty"] = btc_qty
+            snap["volume_usd"] = abs(btc_qty * price)
 
         timeline.append(snap)
 
-    if (
-        position is not None
-        and len(timeline) > 0
-        and timeline[-1]["ts"] != df_signals.index[-1]
-    ):
-        last_row = df_signals.iloc[-1]
-        mtm = calculate_mtm(position, last_row.price)
-        timeline.append(
-            {
-                "ts": last_row.name,
-                "price": last_row.price,
-                "signal": position.signal,
-                "is_entry": False,
-                "is_exit": True,
-                "qty": position.quantity,
-                "pnl": mtm.pnl,
-                "equity": mtm.equity,
-                "volume_usd": abs(position.quantity * last_row.price),
-            }
-        )
+    # Force exit at end if position exists - avoid double counting
+    if position is not None:
+        # Only add final exit if we haven't already processed the last timestamp
+        if len(timeline) == 0 or timeline[-1]["ts"] != df_signals.index[-1]:
+            last_row = df_signals.iloc[-1]
+            final_unrealized_pnl = calculate_unrealized_pnl(position, last_row.price)
+            cumulative_realized_pnl += final_unrealized_pnl
+
+            timeline.append(
+                {
+                    "ts": last_row.name,
+                    "price": last_row.price,
+                    "signal": 0,
+                    "is_entry": False,
+                    "is_exit": True,
+                    "qty": 0.0,
+                    "pnl": 0.0,
+                    "equity": initial_capital + cumulative_realized_pnl,
+                    "volume_usd": abs(position.quantity * last_row.price),
+                }
+            )
 
     return pd.DataFrame(timeline).set_index("ts")
 
@@ -366,25 +373,24 @@ def search():
 
     df = load_price_data()
 
-    # time-based boundaries
+    # Time-based boundaries for 6-month data
     end_ts = df.index[-1]
-    last_month_start = end_ts - pd.Timedelta(days=30)
-    two_months_prior = last_month_start - pd.Timedelta(days=60)
 
-    # isolate last 3 months
-    df = df[df.index >= two_months_prior]
+    # Test: Last 1 month
+    test_start = end_ts - pd.Timedelta(days=30)
 
-    # extract prior 2 months and split 70/30
-    prior_2m = df[(df.index >= two_months_prior) & (df.index < last_month_start)]
-    split_idx = int(len(prior_2m) * 0.7)
-    train_data = prior_2m.iloc[:split_idx]
-    val30_data = prior_2m.iloc[split_idx:]
+    # Validation: 1 month before test (days 31-60 from end)
+    validation_start = test_start - pd.Timedelta(days=30)
 
-    # final validation on last month
-    test_data = df[df.index >= last_month_start]
+    # Create datasets
+    train_data = df[df.index < validation_start]  # First ~4 months
+    validation_data = df[
+        (df.index >= validation_start) & (df.index < test_start)
+    ]  # 1 month
+    test_data = df[df.index >= test_start]  # Last 1 month
 
     logger.info(
-        f"Data split - Train: {len(train_data)} rows, Validation: {len(val30_data)} rows, Test: {len(test_data)} rows"
+        f"Data split - Train: {len(train_data)} rows, Validation: {len(validation_data)} rows, Test: {len(test_data)} rows"
     )
 
     strategies = search_optimal_strategies_parallel(train_data)
@@ -416,7 +422,7 @@ def search():
         )
 
     evaluate("train", train_data)
-    evaluate("validation", val30_data)
+    evaluate("validation", validation_data)
     evaluate("test", test_data)
 
 
@@ -426,18 +432,24 @@ def main():
     df = load_price_data()
     logger.info(f"Full dataset: {len(df)} rows")
 
+    # A(12,35) - Sharpe=2.131, Return=18.15%
+    # 22:39:32 INFO   2. EMA(19,32) - Sharpe=2.085, Return=17.77%
+    # 22:39:32 INFO   3. EMA(18,33) - Sharpe=2.074, Return=17.68%
+    # 22:39:32 INFO   4. EMA(12,33) - Sharpe=2.072, Return=17.69%
+    # 22:39:32 INFO   5. EMA(15,40)
+
     strategies = [
-        {"fast": 15, "slow": 108},
-        {"fast": 18, "slow": 99},
-        {"fast": 15, "slow": 116},
-        {"fast": 19, "slow": 99},
-        {"fast": 16, "slow": 102},
+        {"fast": 13, "slow": 35},
+        {"fast": 19, "slow": 32},
+        {"fast": 18, "slow": 33},
+        {"fast": 12, "slow": 33},
+        {"fast": 15, "slow": 40},
     ]
 
     # Time-based boundaries
     end_ts = df.index[-1]
     last_month_start = end_ts - pd.Timedelta(days=30)
-    two_months_prior = last_month_start - pd.Timedelta(days=60)
+    two_months_prior = last_month_start - pd.Timedelta(days=180)
 
     # Create three datasets
     datasets = {
@@ -524,3 +536,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # search()
