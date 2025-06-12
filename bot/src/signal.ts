@@ -25,7 +25,7 @@ function createVolumeFilter(volumes: number[], period: number = 20): boolean[] {
 			}
 
 			const avgVolume = rollingSum / period;
-			filter[i] = volumes[i]! > avgVolume * 0.01;
+			filter[i] = volumes[i]! > avgVolume * 2;
 		}
 	}
 
@@ -56,7 +56,8 @@ function generateMomentumSignal(
 
 	for (let i = 0; i < fastEMA.length; i++) {
 		const momentum = fastEMA[i]! - slowEMA[i]!;
-		let signal = momentum > 0 ? 1 : momentum < 0 ? -1 : 0;
+		// let signal = momentum > 0 ? 1 : momentum < 0 ? -1 : 0;
+		let signal = momentum > 0 ? -1 : momentum < 0 ? 1 : 0;
 
 		if (signal !== 0 && !volumeFilter[i]!) {
 			signal = 0;
@@ -86,12 +87,20 @@ async function generateSignal(): Promise<Signal> {
 	const volumeFilter = createVolumeFilter(volumes);
 	const individualSignals: number[] = new Array(5);
 
+	// const strategies = [
+	// 	{ fast: 15, slow: 108 },
+	// 	{ fast: 18, slow: 99 },
+	// 	{ fast: 15, slow: 116 },
+	// 	{ fast: 19, slow: 99 },
+	// 	{ fast: 16, slow: 102 },
+	// ];
+
 	const strategies = [
-		{ fast: 15, slow: 108 },
-		{ fast: 18, slow: 99 },
-		{ fast: 15, slow: 116 },
-		{ fast: 19, slow: 99 },
-		{ fast: 16, slow: 102 },
+		{ fast: 6, slow: 19 },
+		{ fast: 6, slow: 22 },
+		{ fast: 8, slow: 21 },
+		{ fast: 4, slow: 26 },
+		{ fast: 4, slow: 23 },
 	];
 
 	const lagIdx = length - 3;

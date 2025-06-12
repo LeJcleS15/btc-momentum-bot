@@ -65,10 +65,10 @@ def generate_momentum_signal(
     fast_ema: pd.Series,
     slow_ema: pd.Series,
     volume: pd.Series = None,
-    vol_threshold: float = 2,
+    vol_threshold: float = 1.5,
 ) -> pd.Series:
     momentum = fast_ema - slow_ema
-    price_signal = np.sign(momentum).shift(2)
+    price_signal = -np.sign(momentum).shift(2)
 
     if volume is not None:
         # only trade when volume > recent average
@@ -346,9 +346,12 @@ def search_optimal_strategies_parallel(
     ema_cache = precompute_all_emas(price_data, 120)
 
     random.seed(42)
-    ema_pairs = list(
-        set((random.randint(2, 30), random.randint(32, 120)) for _ in range(num_tests))
-    )
+    # ema_pairs = list(
+    #     set((random.randint(2, 30), random.randint(32, 120)) for _ in range(num_tests))
+    # )
+    ema_pairs = [(f, s) for f in range(4, 16, 2) for s in range(f + 10, f + 25, 3)]
+    random.shuffle(ema_pairs)
+    ema_pairs = ema_pairs[:num_tests]
 
     worker_args = [(f, s, price_data, ema_cache) for f, s in ema_pairs]
 
@@ -376,24 +379,43 @@ def search():
     # Time-based boundaries for 6-month data
     end_ts = df.index[-1]
 
-    # Test: Last 1 month
     test_start = end_ts - pd.Timedelta(days=30)
 
     # Validation: 1 month before test (days 31-60 from end)
     validation_start = test_start - pd.Timedelta(days=30)
 
+    # Train on last 2 months instead of first 4 months
+    train_start = test_start - pd.Timedelta(days=90)  # Last 3 months total
+
     # Create datasets
-    train_data = df[df.index < validation_start]  # First ~4 months
+    train_data = df[
+        (df.index >= train_start) & (df.index < validation_start)
+    ]  # Days 61-90 from end (1 month)
     validation_data = df[
         (df.index >= validation_start) & (df.index < test_start)
-    ]  # 1 month
+    ]  # Days 31-60 from end (1 month)
     test_data = df[df.index >= test_start]  # Last 1 month
 
     logger.info(
         f"Data split - Train: {len(train_data)} rows, Validation: {len(validation_data)} rows, Test: {len(test_data)} rows"
     )
 
-    strategies = search_optimal_strategies_parallel(train_data)
+    candidates = search_optimal_strategies_parallel(train_data, max_strategies=20)
+
+    # Step 2: Rank using validation Sharpe
+    val_emas = precompute_all_emas(validation_data, 250)
+    results = []
+    for strat in candidates:
+        timeline = backtest_ensemble(validation_data, [strat], ema_cache=val_emas)
+        if timeline.empty:
+            continue
+        cap0 = timeline[timeline.is_entry]["equity"].iloc[0]
+        metrics = calculate_performance_metrics(timeline, cap0)
+        results.append((metrics["sharpe_ratio"], strat))
+
+    # Step 3: Select top-N by validation performance
+    results.sort(reverse=True, key=lambda x: x[0])
+    strategies = [s for _, s in results[:5]]
 
     if not strategies:
         logger.error("No viable strategies found!")
@@ -432,24 +454,26 @@ def main():
     df = load_price_data()
     logger.info(f"Full dataset: {len(df)} rows")
 
-    # A(12,35) - Sharpe=2.131, Return=18.15%
-    # 22:39:32 INFO   2. EMA(19,32) - Sharpe=2.085, Return=17.77%
-    # 22:39:32 INFO   3. EMA(18,33) - Sharpe=2.074, Return=17.68%
-    # 22:39:32 INFO   4. EMA(12,33) - Sharpe=2.072, Return=17.69%
-    # 22:39:32 INFO   5. EMA(15,40)
-
     strategies = [
-        {"fast": 13, "slow": 35},
-        {"fast": 19, "slow": 32},
-        {"fast": 18, "slow": 33},
-        {"fast": 12, "slow": 33},
-        {"fast": 15, "slow": 40},
+        {"fast": 6, "slow": 19},
+        {"fast": 6, "slow": 22},
+        {"fast": 8, "slow": 21},
+        {"fast": 4, "slow": 26},
+        {"fast": 4, "slow": 23},
     ]
+
+    # strategies = [
+    #     {"fast": 14, "slow": 32},
+    #     {"fast": 15, "slow": 30},
+    #     {"fast": 12, "slow": 35},
+    #     {"fast": 14, "slow": 31},
+    #     {"fast": 13, "slow": 31},
+    # ]
 
     # Time-based boundaries
     end_ts = df.index[-1]
     last_month_start = end_ts - pd.Timedelta(days=30)
-    two_months_prior = last_month_start - pd.Timedelta(days=180)
+    two_months_prior = last_month_start - pd.Timedelta(days=90)
 
     # Create three datasets
     datasets = {
@@ -492,9 +516,9 @@ def main():
         all_metrics.append(metrics_row)
 
         # Save timeline for this period
-        timeline_file = f"./results/timeline_{period_key}.csv"
-        timeline.to_csv(timeline_file)
-        logger.info(f"  Saved timeline to {timeline_file}")
+        # timeline_file = f"./results/timeline_{period_key}.csv"
+        # timeline.to_csv(timeline_file)
+        # logger.info(f"  Saved timeline to {timeline_file}")
         logger.info(f"  Sharpe Ratio: {metrics['sharpe_ratio']:.3f}")
         logger.info(f"  Total Return: {metrics['total_return_pct']:.2f}%")
         logger.info(f"  Max Drawdown: {metrics['max_drawdown_pct']:.2f}%")
@@ -512,9 +536,9 @@ def main():
         return timeline, metrics
 
     # Create results directory
-    import os
+    # import os
 
-    os.makedirs("./results", exist_ok=True)
+    # os.makedirs("./results", exist_ok=True)
 
     # Run backtests on all three periods
     for period_key, data in datasets.items():
@@ -526,12 +550,12 @@ def main():
         run_backtest(data, period_names[period_key], period_key)
 
     # Save summary metrics
-    if all_metrics:
-        metrics_df = pd.DataFrame(all_metrics)
-        metrics_df.to_csv("./results/performance_summary.csv", index=False)
-        logger.info("Saved performance summary to ./results/performance_summary.csv")
+    # if all_metrics:
+    #     metrics_df = pd.DataFrame(all_metrics)
+    #     metrics_df.to_csv("./results/performance_summary.csv", index=False)
+    #     logger.info("Saved performance summary to ./results/performance_summary.csv")
 
-    logger.info("All results saved to ./results/ directory")
+    # logger.info("All results saved to ./results/ directory")
 
 
 if __name__ == "__main__":
