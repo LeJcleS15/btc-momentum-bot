@@ -42,7 +42,7 @@ st.markdown("""
 - **Signal:** Median of fast/slow EMA crossovers
 - **Volume Filter:** Trade only when volume > 20-period average
 - **Execution:** Signal generated with 2-bar lag
-- **EMA Pairs:** (15,108), (18,99), (15,116), (19,99), (16,102)
+- **EMA Pairs:** (6,19), (6,22), (8,21), (4,26), (4,23)
 """)
 # Load data
 summary_df, timelines = load_backtest_data()
