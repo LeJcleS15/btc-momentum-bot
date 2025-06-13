@@ -25,7 +25,7 @@ if (!PRIVATE_KEY || !AUTHORITY_KEY) {
 }
 
 export const TRADING_CONFIG = {
-	BTC_QUANTITY: 0.005,
+	BTC_QUANTITY: 0.001,
 	CYCLE_INTERVAL_MS: 60_000,
 	ENV: 'mainnet-beta' as const,
 };
