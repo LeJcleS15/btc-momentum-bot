@@ -55,6 +55,9 @@ export class MomentumBot {
 	private strategyStartingEquity: number = 0;
 	private strategyRealizedPnl: number = 0;
 
+	private strategyTotalFunding: number = 0;
+	private lastFundingPnl: number = 0;
+
 	async initialize(): Promise<{ success: boolean; error?: string }> {
 		try {
 			log.cycle(0, 'Bot initialization started');
@@ -71,6 +74,9 @@ export class MomentumBot {
 			const user = driftClient.getUser();
 			this.strategyStartingEquity =
 				user.getTotalCollateral().toNumber() / QUOTE_PRECISION_NUM;
+
+			this.lastFundingPnl =
+				user.getUnrealizedFundingPNL().toNumber() / QUOTE_PRECISION_NUM;
 
 			log.cycle(0, 'Strategy tracking initialized', {
 				startingEquity: this.strategyStartingEquity,
@@ -742,6 +748,13 @@ export class MomentumBot {
 		try {
 			const user = driftClient.getUser();
 
+			// Track funding payments
+			const currentFundingPnl =
+				user.getUnrealizedFundingPNL().toNumber() / QUOTE_PRECISION_NUM;
+			const fundingDelta = currentFundingPnl - this.lastFundingPnl;
+			this.strategyTotalFunding += fundingDelta;
+			this.lastFundingPnl = currentFundingPnl;
+
 			const accountEquity =
 				user.getTotalCollateral().toNumber() / QUOTE_PRECISION_NUM;
 			const accountUnrealizedPnl =
@@ -751,20 +764,22 @@ export class MomentumBot {
 			const btcMarket = driftClient.getPerpMarketAccount(
 				btcMarketIndex
 			) as PerpMarketAccount;
-
 			const markPrice =
 				btcMarket.amm.lastMarkPriceTwap.toNumber() / QUOTE_PRECISION_NUM;
 
-			const strategyEquity =
-				this.strategyStartingEquity + this.strategyRealizedPnl;
+			const trueStrategyPnl =
+				this.strategyRealizedPnl + this.strategyTotalFunding;
+			const trueStrategyEquity = this.strategyStartingEquity + trueStrategyPnl;
 
 			return {
 				timestamp: Date.now(),
 				cycle: this.cycleCount,
 				accountEquity,
 				accountUnrealizedPnl,
-				strategyEquity,
-				strategyRealizedPnl: this.strategyRealizedPnl,
+				strategyEquity: trueStrategyEquity,
+				strategyRealizedPnl: trueStrategyPnl,
+				strategyTotalFunding: this.strategyTotalFunding,
+				strategyFundingDelta: fundingDelta,
 				position: {
 					size: position.size,
 					entryPrice: position.signal !== 0 ? this.getPositionEntryPrice() : 0,

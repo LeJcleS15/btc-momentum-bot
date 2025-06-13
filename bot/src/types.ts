@@ -26,6 +26,8 @@ export type PerformanceSnapshot = {
 	accountUnrealizedPnl: number;
 	strategyEquity: number;
 	strategyRealizedPnl: number;
+	strategyTotalFunding: number;
+	strategyFundingDelta: number;
 	position: {
 		size: number;
 		entryPrice: number;
