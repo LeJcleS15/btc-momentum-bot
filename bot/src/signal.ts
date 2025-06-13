@@ -25,7 +25,7 @@ function createVolumeFilter(volumes: number[], period: number = 20): boolean[] {
 			}
 
 			const avgVolume = rollingSum / period;
-			filter[i] = volumes[i]! > avgVolume * 2;
+			filter[i] = volumes[i]! > avgVolume * 5;
 		}
 	}
 
@@ -80,7 +80,7 @@ async function generateSignal(): Promise<Signal> {
 
 	for (let i = 0; i < length; i++) {
 		const candle = candles[i]!;
-		prices[i] = candle.oracleClose;
+		prices[i] = candle.fillClose;
 		volumes[i] = candle.baseVolume;
 	}
 

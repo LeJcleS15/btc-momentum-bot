@@ -650,20 +650,17 @@ export class MomentumBot {
 		entryPrice: number,
 		currentPrice: number
 	): number {
-		const positionValue = size * currentPrice;
-		const entryValue = size * entryPrice;
-		return signal > 0 ? positionValue - entryValue : entryValue - positionValue;
+		return signal * size * (currentPrice - entryPrice);
 	}
 
 	private getPositionEntryPrice(): number {
 		const perpPosition = driftClient.getUser().getPerpPosition(btcMarketIndex);
-		if (!perpPosition) return 0;
+		if (!perpPosition || perpPosition.baseAssetAmount.eq(new BN(0))) return 0;
 
 		return (
-			((perpPosition.quoteEntryAmount.abs().toNumber() /
-				perpPosition.baseAssetAmount.abs().toNumber()) *
-				BASE_PRECISION_NUM) /
-			QUOTE_PRECISION_NUM
+			perpPosition.quoteEntryAmount.abs().toNumber() /
+			QUOTE_PRECISION_NUM /
+			(perpPosition.baseAssetAmount.abs().toNumber() / BASE_PRECISION_NUM)
 		);
 	}
 

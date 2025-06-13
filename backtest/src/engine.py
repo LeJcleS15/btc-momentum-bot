@@ -36,7 +36,7 @@ def load_price_data(file_path: str = "./data/btc_1m_185days.json") -> pd.DataFra
     df = pd.DataFrame(data["candles"])
     df["timestamp"] = pd.to_datetime(df["start"].astype(int), unit="ms")
     df = df.set_index("timestamp")
-    df["price"] = df["oracleClose"].astype(float)
+    df["price"] = df["fillClose"].astype(float)
     df["volume"] = df["baseVolume"].astype(float)  # BTC volume
 
     initial_rows = len(df)
@@ -65,7 +65,7 @@ def generate_momentum_signal(
     fast_ema: pd.Series,
     slow_ema: pd.Series,
     volume: pd.Series = None,
-    vol_threshold: float = 1.5,
+    vol_threshold: float = 4,
 ) -> pd.Series:
     momentum = fast_ema - slow_ema
     price_signal = -np.sign(momentum).shift(2)
